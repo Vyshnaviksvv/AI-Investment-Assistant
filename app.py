@@ -13,17 +13,17 @@ import google.generativeai as genai
 # =========================
 st.set_page_config(page_title="AI Investment Assistant", layout="wide")
 
-# Rate limit protection
+# Rate limit
 if "last_call" not in st.session_state:
     st.session_state.last_call = 0
 
 # API KEY
 api_key = st.secrets.get("GEMINI_API_KEY", None) or os.getenv("GEMINI_API_KEY")
 
-if api_key:
-    genai.configure(api_key=api_key)
+if not api_key:
+    st.error("❌ GEMINI_API_KEY not found in secrets or environment")
 else:
-    st.error("❌ GEMINI_API_KEY not found")
+    genai.configure(api_key=api_key)
 
 
 # =========================
@@ -32,15 +32,16 @@ else:
 def safe_gemini_call(prompt):
     try:
         model = genai.GenerativeModel(
-            "gemini-2.5-flash",
+            "gemini-1.5-flash",
             generation_config={
                 "temperature": 0.3,
                 "max_output_tokens": 400
             }
         )
-        return model.generate_content(prompt).text
-    except Exception:
-        return "⚠️ AI service temporarily unavailable. Please try again later."
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"❌ Gemini Error: {str(e)}"
 
 
 # =========================
@@ -48,7 +49,7 @@ def safe_gemini_call(prompt):
 # =========================
 def resolve_tickers_and_intent(query):
     prompt = f"""
-    Classify query: "{query}"
+    Classify this query: "{query}"
 
     Return ONLY JSON:
     {{
@@ -58,24 +59,24 @@ def resolve_tickers_and_intent(query):
     }}
 
     Rules:
-    - Indian stocks use .NS
+    - Indian stocks end with .NS
     - US stocks normal ticker
     - max 2 tickers
     """
 
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-1.5-flash")
         res = model.generate_content(
             prompt,
             generation_config={"response_mime_type": "application/json"}
         )
         return json.loads(res.text)
-    except:
+    except Exception:
         return {"intent": "general_qa", "companies": [], "tickers": []}
 
 
 # =========================
-# STOCK DATA
+# DATA FETCH
 # =========================
 def fetch_stock_data(ticker):
     try:
@@ -206,7 +207,7 @@ def process_query(query):
         Give:
         1. Summary
         2. Technical view
-        3. Risks
+        3. Risk factors
         """
 
         st.markdown("### AI Report")
@@ -236,7 +237,7 @@ def process_query(query):
         st.write(f"{t2} → {r2}")
 
     # =========================
-    # GENERAL Q&A (FIXED CRASH)
+    # GENERAL Q&A
     # =========================
     else:
         st.markdown("### AI Answer")
