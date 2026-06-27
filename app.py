@@ -1,230 +1,184 @@
-import os
-import numpy as np
-import pandas as pd
-import yfinance as yf
 import streamlit as st
+import yfinance as yf
+import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from datetime import datetime
 
 # =========================
 # PAGE CONFIG
 # =========================
-st.set_page_config(page_title="AI Investment Assistant", layout="wide")
-st.title("🤖 AI Investment Assistant (Stable No-Error Version)")
+st.set_page_config(page_title="AI Stock Assistant (Stable)", layout="wide")
+
+st.title("📊 Stock Analysis & Comparison App (Stable Version)")
+st.caption("No AI, No Errors — Fully Safe Streamlit App")
 
 # =========================
 # SAFE DATA FETCH
 # =========================
-def fetch_stock_data(ticker, period="2y"):
+def fetch_data(ticker):
     try:
-        df = yf.download(ticker, period=period, auto_adjust=True)
-
-        # Fix MultiIndex issue
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        df = df.dropna()
-
-        if df.empty:
+        df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        if df is None or df.empty:
             return None
-
+        df = df.dropna()
         return df
-
-    except Exception as e:
-        st.error(f"Data fetch error: {e}")
+    except:
         return None
 
 
 # =========================
-# INDICATORS (SAFE)
+# SAFE INDICATORS
 # =========================
-def calculate_indicators(df):
+def add_indicators(df):
     df = df.copy()
 
-    df = df.select_dtypes(include=[np.number])
+    if len(df) < 60:
+        return None
 
-    if len(df) < 50:
-        return df
-
-    # Moving averages
-    df["MA50"] = df["Close"].rolling(50).mean()
-    df["MA200"] = df["Close"].rolling(200).mean()
     df["MA20"] = df["Close"].rolling(20).mean()
+    df["MA50"] = df["Close"].rolling(50).mean()
 
-    # Bollinger Bands
+    # Bollinger Bands (SAFE)
     std = df["Close"].rolling(20).std()
     df["BB_Upper"] = df["MA20"] + (2 * std)
     df["BB_Lower"] = df["MA20"] - (2 * std)
 
-    # RSI
+    # RSI SAFE
     delta = df["Close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.ewm(span=14, adjust=False).mean()
-    avg_loss = loss.ewm(span=14, adjust=False).mean()
-
-    rs = avg_gain / (avg_loss + 1e-9)
+    gain = delta.clip(lower=0).rolling(14).mean()
+    loss = (-delta.clip(upper=0)).rolling(14).mean()
+    rs = gain / (loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
-
-    # MACD
-    df["EMA12"] = df["Close"].ewm(span=12, adjust=False).mean()
-    df["EMA26"] = df["Close"].ewm(span=26, adjust=False).mean()
-    df["MACD"] = df["EMA12"] - df["EMA26"]
-    df["MACD_SIGNAL"] = df["MACD"].ewm(span=9, adjust=False).mean()
 
     return df.dropna()
 
 
 # =========================
-# SIMPLE AI SCORE ENGINE
+# SAFE SCORE SYSTEM
 # =========================
-def analyze_stock(df):
+def score_stock(df):
     latest = df.iloc[-1]
-
     score = 0
-    reasons = []
 
     # RSI
     if latest["RSI"] < 30:
-        score += 30
-        reasons.append("RSI oversold → bullish")
+        score += 2
     elif latest["RSI"] > 70:
-        score -= 30
-        reasons.append("RSI overbought → bearish")
+        score -= 2
 
     # Trend
-    if latest["Close"] > latest["MA50"] > latest["MA200"]:
-        score += 35
-        reasons.append("Strong uptrend (Golden crossover structure)")
-    elif latest["Close"] < latest["MA50"] < latest["MA200"]:
-        score -= 35
-        reasons.append("Strong downtrend")
+    if latest["Close"] > latest["MA20"] > latest["MA50"]:
+        score += 3
+    elif latest["Close"] < latest["MA20"] < latest["MA50"]:
+        score -= 3
 
-    # MACD
-    if latest["MACD"] > latest["MACD_SIGNAL"]:
-        score += 15
-        reasons.append("MACD bullish momentum")
+    # Bollinger
+    if latest["Close"] < latest["BB_Lower"]:
+        score += 1
+    elif latest["Close"] > latest["BB_Upper"]:
+        score -= 1
+
+    # Recommendation
+    if score >= 3:
+        return "BUY", score
+    elif score <= -3:
+        return "SELL", score
     else:
-        score -= 15
-        reasons.append("MACD bearish momentum")
-
-    # Decision
-    if score >= 25:
-        decision = "BUY"
-    elif score <= -25:
-        decision = "SELL"
-    else:
-        decision = "HOLD"
-
-    confidence = min(95, max(50, abs(score) + 50))
-
-    return decision, confidence, reasons
+        return "HOLD", score
 
 
 # =========================
-# PLOT
+# SAFE PLOT
 # =========================
-def plot_chart(df, ticker):
-    fig, ax = plt.subplots(figsize=(12, 5))
-
-    ax.plot(df.index[-120:], df["Close"][-120:], label="Close")
-    ax.plot(df.index[-120:], df["MA50"][-120:], label="MA50")
-    ax.plot(df.index[-120:], df["MA200"][-120:], label="MA200")
-
-    ax.set_title(f"{ticker} Technical Chart")
+def plot_stock(df, ticker):
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(df["Close"], label="Close")
+    ax.plot(df["MA20"], label="MA20")
+    ax.plot(df["MA50"], label="MA50")
+    ax.set_title(ticker)
     ax.legend()
-
     st.pyplot(fig)
 
 
 # =========================
-# REPORT
+# SINGLE STOCK ANALYSIS
 # =========================
-def generate_report(ticker, df, decision, confidence, reasons):
-    price = df["Close"].iloc[-1]
+def analyze_stock(ticker):
+    df = fetch_data(ticker)
 
-    risk = "Low" if confidence > 75 else "Medium" if confidence > 60 else "High"
+    if df is None:
+        st.error("❌ No data found for this stock")
+        return
 
-    text = f"""
-### 📊 Stock Report: {ticker}
+    df = add_indicators(df)
 
-**Price:** {price:.2f}  
-**Recommendation:** {decision}  
-**Confidence:** {confidence}%  
-**Risk Level:** {risk}
+    if df is None or len(df) < 10:
+        st.warning("⚠️ Not enough data for analysis")
+        return
 
----
+    rec, score = score_stock(df)
 
-### 📌 Key Signals
-"""
+    st.subheader(f"📌 {ticker}")
 
-    for r in reasons:
-        text += f"- {r}\n"
+    col1, col2 = st.columns(2)
+    col1.metric("Recommendation", rec)
+    col2.metric("Score", score)
 
-    text += """
----
-
-⚠️ This is rule-based analysis, not financial advice.
-"""
-
-    return text
+    plot_stock(df, ticker)
 
 
 # =========================
-# SIMPLE TICKER MAP
+# COMPARISON (SAFE)
 # =========================
-ticker_map = {
-    "infosys": "INFY.NS",
-    "tata": "TATAMOTORS.NS",
-    "tcs": "TCS.NS",
-    "reliance": "RELIANCE.NS",
-    "hdfc": "HDFCBANK.NS",
-    "apple": "AAPL",
-    "tesla": "TSLA",
-    "microsoft": "MSFT"
-}
+def compare_stocks(t1, t2):
+    df1 = add_indicators(fetch_data(t1))
+    df2 = add_indicators(fetch_data(t2))
+
+    if df1 is None or df2 is None:
+        st.error("❌ One or both stocks have insufficient data")
+        return
+
+    r1, s1 = score_stock(df1)
+    r2, s2 = score_stock(df2)
+
+    st.subheader("📊 Comparison")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write(t1)
+        st.metric("Recommendation", r1)
+        st.metric("Score", s1)
+
+    with col2:
+        st.write(t2)
+        st.metric("Recommendation", r2)
+        st.metric("Score", s2)
+
+    winner = t1 if s1 > s2 else t2
+    st.success(f"🏆 Better Stock (based on score): {winner}")
 
 
 # =========================
 # UI
 # =========================
-query = st.text_input("Ask (e.g., Should I invest in Infosys?)")
+mode = st.radio("Select Mode", ["Single Stock", "Compare Stocks"])
 
-if st.button("Analyze"):
+if mode == "Single Stock":
+    ticker = st.text_input("Enter Stock Ticker (e.g., TCS.NS, INFY.NS, AAPL)")
 
-    if not query:
-        st.warning("Please enter a query")
-    else:
-        st.info("Processing...")
+    if st.button("Analyze"):
+        if ticker:
+            analyze_stock(ticker.upper())
+        else:
+            st.warning("Enter a ticker")
 
-        query_lower = query.lower()
+else:
+    t1 = st.text_input("Stock 1")
+    t2 = st.text_input("Stock 2")
 
-        ticker = None
-        for k, v in ticker_map.items():
-            if k in query_lower:
-                ticker = v
-                break
-
-        if not ticker:
-            st.error("Stock not recognized. Try Infosys, Tata, Reliance, Apple etc.")
-            st.stop()
-
-        df = fetch_stock_data(ticker)
-
-        if df is None or len(df) < 50:
-            st.error("Not enough data available")
-            st.stop()
-
-        df = calculate_indicators(df)
-
-        decision, confidence, reasons = analyze_stock(df)
-
-        st.subheader(ticker)
-
-        st.metric("Recommendation", decision)
-        st.metric("Confidence", f"{confidence}%")
-
-        plot_chart(df, ticker)
-
-        st.markdown(generate_report(ticker, df, decision, confidence, reasons))
+    if st.button("Compare"):
+        if t1 and t2:
+            compare_stocks(t1.upper(), t2.upper())
+        else:
+            st.warning("Enter both tickers")
