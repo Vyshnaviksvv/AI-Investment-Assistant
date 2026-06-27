@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
@@ -12,23 +13,42 @@ import google.generativeai as genai
 # =========================
 st.set_page_config(page_title="AI Investment Assistant", layout="wide")
 
+# Rate limit protection
+if "last_call" not in st.session_state:
+    st.session_state.last_call = 0
+
 # API KEY
 api_key = st.secrets.get("GEMINI_API_KEY", None) or os.getenv("GEMINI_API_KEY")
 
 if api_key:
     genai.configure(api_key=api_key)
 else:
-    st.warning("⚠️ Add GEMINI_API_KEY in Streamlit secrets or environment variables")
+    st.error("❌ GEMINI_API_KEY not found")
 
 
 # =========================
-# GEMINI INTENT PARSER
+# SAFE GEMINI CALL
+# =========================
+def safe_gemini_call(prompt):
+    try:
+        model = genai.GenerativeModel(
+            "gemini-2.5-flash",
+            generation_config={
+                "temperature": 0.3,
+                "max_output_tokens": 400
+            }
+        )
+        return model.generate_content(prompt).text
+    except Exception:
+        return "⚠️ AI service temporarily unavailable. Please try again later."
+
+
+# =========================
+# INTENT PARSER
 # =========================
 def resolve_tickers_and_intent(query):
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
     prompt = f"""
-    Analyze this query: "{query}"
+    Classify query: "{query}"
 
     Return ONLY JSON:
     {{
@@ -38,20 +58,24 @@ def resolve_tickers_and_intent(query):
     }}
 
     Rules:
-    - Indian stocks end with .NS
-    - US stocks use normal tickers
-    - Max 2 tickers
+    - Indian stocks use .NS
+    - US stocks normal ticker
+    - max 2 tickers
     """
 
     try:
-        res = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        res = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
         return json.loads(res.text)
     except:
         return {"intent": "general_qa", "companies": [], "tickers": []}
 
 
 # =========================
-# DATA FETCH
+# STOCK DATA
 # =========================
 def fetch_stock_data(ticker):
     try:
@@ -70,7 +94,6 @@ def calculate_indicators(df):
     df["MA50"] = df["Close"].rolling(50).mean()
     df["MA200"] = df["Close"].rolling(200).mean()
 
-    # RSI
     delta = df["Close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -81,7 +104,6 @@ def calculate_indicators(df):
     rs = avg_gain / (avg_loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
 
-    # MACD
     df["EMA12"] = df["Close"].ewm(span=12).mean()
     df["EMA26"] = df["Close"].ewm(span=26).mean()
     df["MACD"] = df["EMA12"] - df["EMA26"]
@@ -97,19 +119,16 @@ def generate_technical_recommendation(df):
     latest = df.iloc[-1]
     score = 0
 
-    # RSI
     if latest["RSI"] < 30:
         score += 25
     elif latest["RSI"] > 70:
         score -= 25
 
-    # Trend
     if latest["Close"] > latest["MA50"] > latest["MA200"]:
         score += 30
     elif latest["Close"] < latest["MA50"] < latest["MA200"]:
         score -= 30
 
-    # MACD
     if latest["MACD"] > latest["MACD_SIGNAL"]:
         score += 15
     else:
@@ -122,7 +141,7 @@ def generate_technical_recommendation(df):
     else:
         rec = "HOLD"
 
-    confidence = int(min(95, max(20, abs(score))))
+    confidence = int(max(20, min(95, abs(score))))
 
     return rec, confidence
 
@@ -141,30 +160,17 @@ def plot_data(df, ticker):
 
 
 # =========================
-# AI REPORT
-# =========================
-def generate_ai_report(ticker, df, rec):
-    model = genai.GenerativeModel("gemini-2.5-flash")
-
-    prompt = f"""
-    Stock: {ticker}
-    Price: {df['Close'].iloc[-1]}
-    Recommendation: {rec}
-
-    Write a short report:
-    1. Summary
-    2. Technical analysis
-    3. Risk factors
-    """
-
-    res = model.generate_content(prompt)
-    return res.text
-
-
-# =========================
 # MAIN ENGINE
 # =========================
 def process_query(query):
+
+    # RATE LIMIT
+    if time.time() - st.session_state.last_call < 3:
+        st.warning("⏳ Please wait 3 seconds before next request")
+        st.stop()
+
+    st.session_state.last_call = time.time()
+
     data = resolve_tickers_and_intent(query)
 
     intent = data.get("intent", "general_qa")
@@ -172,7 +178,9 @@ def process_query(query):
 
     st.info(f"Intent: {intent}")
 
+    # =========================
     # SINGLE STOCK
+    # =========================
     if intent == "single_analysis" and tickers:
         ticker = tickers[0]
 
@@ -190,15 +198,35 @@ def process_query(query):
 
         plot_data(df, ticker)
 
-        st.markdown("### AI Report")
-        st.write(generate_ai_report(ticker, df, rec))
+        prompt = f"""
+        Stock: {ticker}
+        Price: {df['Close'].iloc[-1]}
+        Recommendation: {rec}
 
+        Give:
+        1. Summary
+        2. Technical view
+        3. Risks
+        """
+
+        st.markdown("### AI Report")
+        st.write(safe_gemini_call(prompt))
+
+    # =========================
     # COMPARE
+    # =========================
     elif intent == "compare" and len(tickers) >= 2:
         t1, t2 = tickers[:2]
 
-        df1 = calculate_indicators(fetch_stock_data(t1))
-        df2 = calculate_indicators(fetch_stock_data(t2))
+        df1 = fetch_stock_data(t1)
+        df2 = fetch_stock_data(t2)
+
+        if df1 is None or df2 is None:
+            st.error("Invalid tickers")
+            return
+
+        df1 = calculate_indicators(df1)
+        df2 = calculate_indicators(df2)
 
         r1, _ = generate_technical_recommendation(df1)
         r2, _ = generate_technical_recommendation(df2)
@@ -207,11 +235,12 @@ def process_query(query):
         st.write(f"{t1} → {r1}")
         st.write(f"{t2} → {r2}")
 
-    # GENERAL QA
+    # =========================
+    # GENERAL Q&A (FIXED CRASH)
+    # =========================
     else:
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        res = model.generate_content(query)
-        st.write(res.text)
+        st.markdown("### AI Answer")
+        st.write(safe_gemini_call(query))
 
 
 # =========================
@@ -219,7 +248,7 @@ def process_query(query):
 # =========================
 st.title("🤖 AI Investment Assistant")
 
-query = st.text_input("Ask your question (e.g., 'Should I buy Tata Motors?')")
+query = st.text_input("Ask your question (e.g., Should I buy Infosys?)")
 
 if st.button("Analyze"):
     if query.strip():
