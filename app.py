@@ -1,23 +1,20 @@
 import os
 import json
+import time
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import streamlit as st
-import matplotlib.pyplot as plt
 import google.generativeai as genai
 from datetime import datetime
 
 # =========================
-# PAGE CONFIG
+# CONFIG
 # =========================
 st.set_page_config(page_title="AI Investment Assistant", layout="wide")
 
-st.title("🤖 AI Investment Assistant")
+GEMINI_MODEL = "gemini-2.5-flash"
 
-# =========================
-# GEMINI CONFIG
-# =========================
 api_key = st.secrets.get("GEMINI_API_KEY", None) or os.getenv("GEMINI_API_KEY")
 
 if api_key:
@@ -25,144 +22,149 @@ if api_key:
 else:
     st.warning("⚠️ Add GEMINI_API_KEY in Streamlit secrets or environment")
 
-MODEL_NAME = "gemini-1.5-flash"   # stable model (fixes 404 issue)
-
-
 # =========================
-# SAFE GEMINI CALL (IMPORTANT FIX)
+# SAFE GEMINI WRAPPER
 # =========================
 def safe_gemini(prompt):
-    try:
-        model = genai.GenerativeModel(MODEL_NAME)
-        res = model.generate_content(prompt)
-        return res.text
-    except Exception as e:
-        return f"⚠️ Gemini Error: {str(e)}"
+    if not api_key:
+        return "⚠️ Gemini not configured"
+
+    model = genai.GenerativeModel(GEMINI_MODEL)
+
+    for i in range(2):  # retry twice
+        try:
+            res = model.generate_content(prompt)
+            return res.text
+        except Exception as e:
+            err = str(e)
+
+            # quota / rate limit fallback
+            if "429" in err:
+                time.sleep(2)
+                continue
+
+            # model not found fallback
+            if "404" in err:
+                return "⚠️ Model error. Check GEMINI_MODEL name."
+
+            return "⚠️ AI temporarily unavailable. Using fallback analysis."
+
+    return "⚠️ Gemini quota exceeded. Try again later."
 
 
 # =========================
 # INTENT PARSER
 # =========================
-def resolve_tickers_and_intent(query):
-    prompt = f"""
-    Analyze: "{query}"
+def resolve_tickers(query):
+    model = genai.GenerativeModel(GEMINI_MODEL)
 
-    Return ONLY JSON:
+    prompt = f"""
+    Extract stock tickers from:
+    "{query}"
+
+    Return JSON:
     {{
-        "intent": "single_analysis|compare|general_qa",
-        "companies": [],
-        "tickers": []
+      "intent": "single|compare|general",
+      "tickers": ["AAPL", "TCS.NS"]
     }}
 
-    Rules:
-    - India stocks end with .NS
-    - US stocks normal ticker
+    ONLY JSON.
     """
 
     try:
-        model = genai.GenerativeModel(MODEL_NAME)
         res = model.generate_content(
             prompt,
             generation_config={"response_mime_type": "application/json"}
         )
         return json.loads(res.text)
     except:
-        return {"intent": "general_qa", "companies": [], "tickers": []}
+        return {"intent": "general", "tickers": []}
 
 
 # =========================
-# DATA FETCH
+# DATA
 # =========================
-def fetch_stock_data(ticker):
-    try:
-        df = yf.Ticker(ticker).history(period="2y")
-        return df if not df.empty else None
-    except:
-        return None
+def fetch_data(ticker):
+    df = yf.Ticker(ticker).history(period="1y")
+    return df if not df.empty else None
 
 
 # =========================
 # INDICATORS
 # =========================
-def calculate_indicators(df):
+def indicators(df):
     df = df.copy()
 
     df["MA50"] = df["Close"].rolling(50).mean()
     df["MA200"] = df["Close"].rolling(200).mean()
 
-    df["MA20"] = df["Close"].rolling(20).mean()
-    std = df["Close"].rolling(20).std()
-    df["BB_Upper"] = df["MA20"] + 2 * std
-    df["BB_Lower"] = df["MA20"] - 2 * std
-
     delta = df["Close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = gain.ewm(com=13).mean()
-    avg_loss = loss.ewm(com=13).mean()
-    rs = avg_gain / (avg_loss + 1e-9)
-
+    rs = gain.ewm(span=14).mean() / (loss.ewm(span=14).mean() + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
-
-    df["EMA12"] = df["Close"].ewm(span=12).mean()
-    df["EMA26"] = df["Close"].ewm(span=26).mean()
-    df["MACD"] = df["EMA12"] - df["EMA26"]
-    df["MACD_SIGNAL"] = df["MACD"].ewm(span=9).mean()
 
     return df
 
 
 # =========================
-# TECHNICAL RECOMMENDATION
+# BUY PROBABILITY
 # =========================
-def generate_technical_recommendation(df):
-    latest = df.iloc[-1]
-
+def buy_probability(df):
+    last = df.iloc[-1]
     score = 0
 
-    if latest["RSI"] < 30:
-        score += 25
-    elif latest["RSI"] > 70:
-        score -= 25
-
-    if latest["Close"] > latest["MA50"] > latest["MA200"]:
+    if last["RSI"] < 30:
         score += 30
-    elif latest["Close"] < latest["MA50"] < latest["MA200"]:
+    elif last["RSI"] > 70:
         score -= 30
 
-    if latest["MACD"] > latest["MACD_SIGNAL"]:
-        score += 15
-    else:
-        score -= 15
+    if last["Close"] > last["MA50"] > last["MA200"]:
+        score += 40
+    elif last["Close"] < last["MA50"] < last["MA200"]:
+        score -= 40
 
-    if score > 20:
-        rec = "BUY"
-    elif score < -20:
-        rec = "SELL"
-    else:
-        rec = "HOLD"
-
-    conf = int(min(95, max(20, abs(score))))
-
-    return rec, conf
+    prob = min(95, max(5, 50 + score))
+    return prob
 
 
 # =========================
-# PLOT
+# SENTIMENT (simple fallback)
 # =========================
-def plot_data(df, ticker):
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(df.index[-120:], df["Close"][-120:], label="Close")
-    ax.plot(df.index[-120:], df["MA50"][-120:], label="MA50")
-    ax.plot(df.index[-120:], df["MA200"][-120:], label="MA200")
-    ax.set_title(f"{ticker} Price Chart")
-    ax.legend()
-    st.pyplot(fig)
+def sentiment_score(news_list):
+    positive_words = ["rise", "profit", "growth", "gain", "up", "strong"]
+    negative_words = ["fall", "loss", "drop", "weak", "down"]
+
+    score = 0
+    for n in news_list:
+        text = n.lower()
+        for w in positive_words:
+            if w in text:
+                score += 1
+        for w in negative_words:
+            if w in text:
+                score -= 1
+
+    if score > 2:
+        return "Positive 😊"
+    elif score < -2:
+        return "Negative 😟"
+    return "Neutral 😐"
 
 
 # =========================
-# AI REPORT (FIXED FUNCTION YOU ASKED)
+# NEWS
+# =========================
+def get_news(ticker):
+    try:
+        return yf.Ticker(ticker).news[:5]
+    except:
+        return []
+
+
+# =========================
+# AI REPORT
 # =========================
 def ai_report(ticker, df, rec):
     prompt = f"""
@@ -180,73 +182,97 @@ def ai_report(ticker, df, rec):
 
 
 # =========================
-# MAIN ENGINE
+# ANALYSIS
 # =========================
-def process_query(query):
-    st.info("Processing request...")
+def analyze(ticker):
+    df = fetch_data(ticker)
+    if df is None:
+        st.error("No data found")
+        return
 
-    data = resolve_tickers_and_intent(query)
-    intent = data["intent"]
-    tickers = data["tickers"]
+    df = indicators(df)
+    prob = buy_probability(df)
 
-    st.write("Intent:", intent)
+    rec = "BUY" if prob > 65 else "SELL" if prob < 40 else "HOLD"
 
-    # -------------------------
-    # SINGLE STOCK
-    # -------------------------
-    if intent == "single_analysis" and tickers:
-        t = tickers[0]
+    st.subheader(ticker)
 
-        df = fetch_stock_data(t)
-        if df is None:
-            st.error("No data found")
-            return
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Recommendation", rec)
+    col2.metric("Buy Probability", f"{prob}%")
+    col3.metric("Price", round(df["Close"].iloc[-1], 2))
 
-        df = calculate_indicators(df)
-        rec, conf = generate_technical_recommendation(df)
+    st.line_chart(df[["Close", "MA50", "MA200"]].tail(100))
 
-        st.subheader(t)
-        st.metric("Recommendation", rec)
-        st.metric("Confidence", f"{conf}%")
+    # NEWS
+    news = get_news(ticker)
+    if news:
+        st.markdown("### 📰 News")
+        titles = []
+        for n in news:
+            title = n.get("title", "")
+            titles.append(title)
+            st.write("•", title)
 
-        plot_data(df, t)
+        st.info("Sentiment: " + sentiment_score(titles))
 
-        st.markdown("### AI Report")
-        st.write(ai_report(t, df, rec))
-
-
-    # -------------------------
-    # COMPARE
-    # -------------------------
-    elif intent == "compare" and len(tickers) >= 2:
-        t1, t2 = tickers[:2]
-
-        df1 = calculate_indicators(fetch_stock_data(t1))
-        df2 = calculate_indicators(fetch_stock_data(t2))
-
-        r1, _ = generate_technical_recommendation(df1)
-        r2, _ = generate_technical_recommendation(df2)
-
-        st.subheader("Comparison")
-        st.write(f"{t1} → {r1}")
-        st.write(f"{t2} → {r2}")
-
-
-    # -------------------------
-    # GENERAL Q&A (SAFE FIX)
-    # -------------------------
-    else:
-        st.subheader("AI Answer")
-        st.write(safe_gemini(query))
+    # AI REPORT
+    st.markdown("### 🤖 AI Report")
+    st.write(ai_report(ticker, df, rec))
 
 
 # =========================
-# UI
+# PORTFOLIO
 # =========================
-query = st.text_input("Ask your question (e.g., Should I buy Infosys?)")
+if "portfolio" not in st.session_state:
+    st.session_state.portfolio = {}
+
+def portfolio_ui():
+    st.sidebar.title("📊 Portfolio")
+
+    ticker = st.sidebar.text_input("Add Stock")
+    qty = st.sidebar.number_input("Quantity", 1)
+
+    if st.sidebar.button("Add"):
+        st.session_state.portfolio[ticker] = qty
+
+    st.sidebar.write(st.session_state.portfolio)
+
+
+# =========================
+# CHAT UI
+# =========================
+st.title("🤖 AI Investment Assistant")
+
+portfolio_ui()
+
+query = st.text_input("Ask: Should I invest in Infosys?")
 
 if st.button("Analyze"):
-    if query:
-        process_query(query)
+    if not query:
+        st.warning("Enter query")
     else:
-        st.warning("Enter a query first")
+        parsed = resolve_tickers(query)
+
+        st.info(f"Intent: {parsed['intent']}")
+
+        if parsed["tickers"]:
+            for t in parsed["tickers"]:
+                analyze(t)
+        else:
+            st.markdown(safe_gemini(query))
+
+
+# =========================
+# AUTO RECOMMENDATIONS
+# =========================
+st.markdown("### 🔥 Auto Recommendations")
+
+watchlist = ["AAPL", "MSFT", "TSLA", "TCS.NS", "INFY.NS"]
+
+for t in watchlist:
+    df = fetch_data(t)
+    if df is not None:
+        df = indicators(df)
+        prob = buy_probability(df)
+        st.write(t, "→ Buy Probability:", prob)
