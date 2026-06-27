@@ -1,3 +1,4 @@
+
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -6,13 +7,13 @@ import matplotlib.pyplot as plt
 import re
 
 # =========================
-# CONFIG
+# APP CONFIG
 # =========================
-st.set_page_config(page_title="Smart Stock AI", layout="wide")
-st.title("📊 Smart Stock Assistant (ULTIMATE STABLE VERSION)")
+st.set_page_config(page_title="Smart Stock Assistant", layout="wide")
+st.title("📊 Smart Stock Assistant (FINAL STABLE VERSION)")
 
 # =========================
-# STOCK DATABASE
+# STOCK MAP
 # =========================
 STOCK_MAP = {
     "tata": "TATAMOTORS.NS",
@@ -32,17 +33,16 @@ STOCK_MAP = {
 }
 
 # =========================
-# SMART STOCK EXTRACTION (FIXED)
+# EXTRACT STOCK (SAFE NLP)
 # =========================
 def extract_stock(text):
     text = text.lower()
 
-    # direct keyword match
-    for key in STOCK_MAP:
-        if key in text:
-            return STOCK_MAP[key], key
+    for k, v in STOCK_MAP.items():
+        if k in text:
+            return v, k
 
-    # ticker detection (AAPL, TSLA etc)
+    # fallback ticker detection
     words = re.findall(r"[A-Za-z]{1,6}", text.upper())
     for w in words:
         if len(w) <= 6:
@@ -52,7 +52,7 @@ def extract_stock(text):
 
 
 # =========================
-# FETCH DATA
+# FETCH DATA (SAFE)
 # =========================
 def get_data(ticker):
     try:
@@ -65,7 +65,7 @@ def get_data(ticker):
 
 
 # =========================
-# INDICATORS
+# INDICATORS (SAFE)
 # =========================
 def indicators(df):
     df = df.copy()
@@ -80,30 +80,40 @@ def indicators(df):
     rs = gain / (loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
 
-    return df.dropna()
+    df = df.dropna()
+
+    return df
 
 
 # =========================
-# AI-FREE DECISION ENGINE
+# SAFE DECISION ENGINE (FIXED CRASH)
 # =========================
 def decision(df):
     last = df.iloc[-1]
 
+    rsi = last.get("RSI", np.nan)
+    close = last.get("Close", np.nan)
+    ma20 = last.get("MA20", np.nan)
+    ma50 = last.get("MA50", np.nan)
+
+    # SAFE CHECK
+    if np.isnan(rsi) or np.isnan(close) or np.isnan(ma20) or np.isnan(ma50):
+        return "HOLD", 50
+
     score = 0
 
     # RSI logic
-    if last["RSI"] < 30:
+    if rsi < 30:
         score += 30
-    elif last["RSI"] > 70:
+    elif rsi > 70:
         score -= 30
 
     # trend logic
-    if last["Close"] > last["MA20"] > last["MA50"]:
+    if close > ma20 > ma50:
         score += 40
-    elif last["Close"] < last["MA20"] < last["MA50"]:
+    elif close < ma20 < ma50:
         score -= 40
 
-    # final decision
     if score > 25:
         return "BUY", min(95, 50 + abs(score))
     elif score < -25:
@@ -126,13 +136,13 @@ def plot(df, ticker):
 
 
 # =========================
-# MAIN ANALYSIS
+# SINGLE ANALYSIS
 # =========================
 def analyze(text):
     ticker, name = extract_stock(text)
 
     if ticker is None:
-        st.error("❌ Stock not understood. Try: Tata, Infosys, Apple, Tesla")
+        st.error("❌ Stock not understood. Try Tata, Infosys, Apple, Tesla, AAPL")
         return
 
     st.success(f"Detected: {name} → {ticker}")
@@ -140,12 +150,12 @@ def analyze(text):
     df = get_data(ticker)
 
     if df is None:
-        st.error("❌ No market data found for this stock.")
+        st.error("❌ No data found for this stock.")
         return
 
     df = indicators(df)
 
-    if df is None or len(df) < 50:
+    if df is None or len(df) < 20:
         st.error("❌ Not enough data for analysis.")
         return
 
@@ -159,23 +169,72 @@ def analyze(text):
     st.subheader("📊 Price Chart")
     plot(df, ticker)
 
-    st.subheader("📌 Simple Insight")
+    st.subheader("📌 Insight")
 
     if rec == "BUY":
-        st.write("📈 Trend is bullish. Stock showing upward momentum.")
+        st.success("📈 Bullish trend detected. Momentum positive.")
     elif rec == "SELL":
-        st.write("📉 Weak trend. Risk of downside movement.")
+        st.error("📉 Bearish trend detected. Risk high.")
     else:
-        st.write("⚖️ Mixed signals. Wait for clear trend.")
+        st.warning("⚖️ Mixed signals. Wait for confirmation.")
+
+
+# =========================
+# COMPARE STOCKS
+# =========================
+def compare(a, b):
+    t1, n1 = extract_stock(a)
+    t2, n2 = extract_stock(b)
+
+    if t1 is None or t2 is None:
+        st.error("❌ Could not understand stocks")
+        return
+
+    df1 = indicators(get_data(t1))
+    df2 = indicators(get_data(t2))
+
+    if df1 is None or df2 is None:
+        st.error("❌ Not enough data for comparison")
+        return
+
+    r1, _ = decision(df1)
+    r2, _ = decision(df2)
+
+    st.subheader("📊 Comparison Result")
+    st.write(f"{t1}: {r1}")
+    st.write(f"{t2}: {r2}")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write(n1)
+        plot(df1, t1)
+
+    with col2:
+        st.write(n2)
+        plot(df2, t2)
 
 
 # =========================
 # UI
 # =========================
-query = st.text_input("Ask anything (e.g., 'Should I invest in Tata?', 'Infosys', 'AAPL')")
+mode = st.radio("Select Mode", ["Single Stock", "Compare Stocks"])
 
-if st.button("Analyze"):
-    if query.strip():
-        analyze(query)
-    else:
-        st.warning("Enter a query")
+if mode == "Single Stock":
+    q = st.text_input("Ask anything (e.g., 'Should I invest in Apple')")
+
+    if st.button("Analyze"):
+        if q.strip():
+            analyze(q)
+        else:
+            st.warning("Enter a query")
+
+else:
+    s1 = st.text_input("Stock 1")
+    s2 = st.text_input("Stock 2")
+
+    if st.button("Compare"):
+        if s1 and s2:
+            compare(s1, s2)
+        else:
+            st.warning("Enter both stocks")
