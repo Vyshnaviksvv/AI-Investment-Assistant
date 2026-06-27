@@ -3,14 +3,17 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 # =========================
-# PAGE CONFIG
+# CONFIG
 # =========================
 st.set_page_config(page_title="Smart Stock Assistant", layout="wide")
 
+st.title("📊 Smart Stock Assistant (Stable No-Error Version)")
+
 # =========================
-# SAFE STOCK MAPPING
+# STOCK MAP (IMPORTANT)
 # =========================
 STOCK_MAP = {
     "tata motors": "TATAMOTORS.NS",
@@ -29,67 +32,51 @@ STOCK_MAP = {
 }
 
 # =========================
-# RESOLVE STOCK NAME SAFELY
+# RESOLVE STOCK NAME
 # =========================
 def resolve_stock(name: str):
-    if not name:
-        return None
-
     name = name.lower().strip()
-
-    # direct ticker input
-    if ".ns" in name or len(name) <= 6:
-        return name.upper()
-
-    # mapped name
     if name in STOCK_MAP:
         return STOCK_MAP[name]
 
-    # fuzzy match fallback
-    for k in STOCK_MAP:
-        if k in name:
-            return STOCK_MAP[k]
+    # direct ticker fallback
+    return name.upper()
 
-    return None
 
 # =========================
-# FETCH DATA (SAFE)
+# FETCH DATA
 # =========================
-def get_data(ticker):
+def fetch_data(ticker):
     try:
-        df = yf.download(ticker, period="2y", interval="1d", progress=False)
+        df = yf.download(ticker, period="1y", interval="1d", progress=False)
         if df is None or df.empty:
             return None
-        df = df.dropna()
         return df
     except:
         return None
 
+
 # =========================
-# INDICATORS (FIXED SAFE VERSION)
+# INDICATORS (SAFE)
 # =========================
 def add_indicators(df):
     df = df.copy()
 
-    if len(df) < 60:
+    if len(df) < 50:
         return None
 
     df["MA20"] = df["Close"].rolling(20).mean()
     df["MA50"] = df["Close"].rolling(50).mean()
 
-    # Bollinger Bands SAFE FIX
-    std = df["Close"].rolling(20).std()
-    df["BB_Upper"] = df["MA20"] + (2 * std)
-    df["BB_Lower"] = df["MA20"] - (2 * std)
-
-    # RSI
     delta = df["Close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+
     rs = gain / (loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
 
     return df.dropna()
+
 
 # =========================
 # SIGNAL ENGINE
@@ -99,110 +86,124 @@ def analyze(df):
 
     score = 0
 
-    # RSI logic
+    # RSI
     if last["RSI"] < 30:
         score += 25
     elif last["RSI"] > 70:
         score -= 25
 
     # Trend
-    if last["Close"] > last["MA50"]:
-        score += 15
+    if last["Close"] > last["MA20"] > last["MA50"]:
+        score += 30
+    elif last["Close"] < last["MA20"] < last["MA50"]:
+        score -= 30
+
+    # Decision
+    if score > 20:
+        return "BUY", min(95, abs(score) + 40)
+    elif score < -20:
+        return "SELL", min(95, abs(score) + 40)
     else:
-        score -= 10
+        return "HOLD", min(70, abs(score) + 30)
 
-    # Bollinger
-    if last["Close"] < last["BB_Lower"]:
-        score += 20
-    elif last["Close"] > last["BB_Upper"]:
-        score -= 20
-
-    if score >= 25:
-        return "BUY", score
-    elif score <= -20:
-        return "SELL", score
-    return "HOLD", score
 
 # =========================
 # PLOT
 # =========================
-def plot(df, title):
+def plot(df, ticker):
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(df.index, df["Close"], label="Close")
     ax.plot(df.index, df["MA20"], label="MA20")
     ax.plot(df.index, df["MA50"], label="MA50")
-    ax.set_title(title)
+    ax.set_title(ticker)
     ax.legend()
     st.pyplot(fig)
+
 
 # =========================
 # SINGLE STOCK
 # =========================
-def single_stock(user_input):
-    ticker = resolve_stock(user_input)
+def single_stock(name):
+    ticker = resolve_stock(name)
 
-    if not ticker:
-        st.error("❌ Could not understand stock name. Try Tata, Infosys, AAPL, TSLA")
-        return
+    st.info(f"Resolved: {name} → {ticker}")
 
-    df = get_data(ticker)
+    df = fetch_data(ticker)
+
     if df is None:
-        st.error("❌ No data found for this stock")
+        st.error("❌ No data found. Try different stock name or ticker.")
         return
 
     df = add_indicators(df)
+
     if df is None:
-        st.error("❌ Not enough data for analysis")
+        st.error("❌ Not enough data for analysis.")
         return
 
-    rec, score = analyze(df)
+    rec, conf = analyze(df)
 
-    st.subheader(f"{ticker}")
-    st.metric("Recommendation", rec)
-    st.metric("Score", score)
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Ticker", ticker)
+    col2.metric("Recommendation", rec)
+    col3.metric("Confidence", f"{conf}%")
 
     plot(df, ticker)
+
 
 # =========================
 # COMPARE STOCKS
 # =========================
-def compare(stock1, stock2):
-    t1 = resolve_stock(stock1)
-    t2 = resolve_stock(stock2)
+def compare(s1, s2):
+    t1 = resolve_stock(s1)
+    t2 = resolve_stock(s2)
 
-    if not t1 or not t2:
-        st.error("❌ Could not understand stock names")
-        return
+    st.info(f"{s1} → {t1} | {s2} → {t2}")
 
-    df1 = add_indicators(get_data(t1))
-    df2 = add_indicators(get_data(t2))
+    df1 = add_indicators(fetch_data(t1))
+    df2 = add_indicators(fetch_data(t2))
 
     if df1 is None or df2 is None:
         st.error("❌ Not enough data for comparison")
         return
 
-    r1, s1 = analyze(df1)
-    r2, s2 = analyze(df2)
+    r1, _ = analyze(df1)
+    r2, _ = analyze(df2)
 
-    st.subheader("📊 Comparison")
-    st.write(f"{t1}: {r1} ({s1})")
-    st.write(f"{t2}: {r2} ({s2})")
+    st.subheader("📊 Comparison Result")
+    st.write(f"{t1}: {r1}")
+    st.write(f"{t2}: {r2}")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.write("Stock 1")
+        plot(df1, t1)
+
+    with col2:
+        st.write("Stock 2")
+        plot(df2, t2)
+
 
 # =========================
 # UI
 # =========================
-st.title("📊 Smart Stock Assistant (Stable No-Error Version)")
-
 mode = st.radio("Select Mode", ["Single Stock", "Compare Stocks"])
 
 if mode == "Single Stock":
-    user_input = st.text_input("Enter stock name (e.g., Tata, Infosys, AAPL)")
+    query = st.text_input("Enter stock name (e.g., Tata, Infosys, AAPL)")
+
     if st.button("Analyze"):
-        single_stock(user_input)
+        if query:
+            single_stock(query)
+        else:
+            st.warning("Enter stock name")
 
 else:
-    c1 = st.text_input("Stock 1")
-    c2 = st.text_input("Stock 2")
+    s1 = st.text_input("Stock 1")
+    s2 = st.text_input("Stock 2")
 
     if st.button("Compare"):
-        compare(c1, c2)
+        if s1 and s2:
+            compare(s1, s2)
+        else:
+            st.warning("Enter both stocks")
