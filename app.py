@@ -1,241 +1,210 @@
 import os
-import time
-import json
 import numpy as np
 import pandas as pd
 import yfinance as yf
 import streamlit as st
-import google.generativeai as genai
+import matplotlib.pyplot as plt
 from datetime import datetime
 
 # =========================
-# APP CONFIG
+# CONFIG
 # =========================
 st.set_page_config(page_title="AI Investment Assistant", layout="wide")
 
-GEMINI_MODEL = "gemini-2.5-flash"
-
-api_key = st.secrets.get("GEMINI_API_KEY", None) or os.getenv("GEMINI_API_KEY")
-
-if api_key:
-    genai.configure(api_key=api_key)
-else:
-    st.warning("⚠️ Add GEMINI_API_KEY to secrets or env")
+st.title("🤖 AI Investment Assistant (Stable Version)")
 
 # =========================
-# SAFE GEMINI (NO CRASH)
+# STOCK DATA
 # =========================
-def safe_gemini(prompt):
-    if not api_key:
-        return "⚠️ AI disabled (no API key)"
-
-    model = genai.GenerativeModel(GEMINI_MODEL)
-
+def fetch_stock_data(ticker, period="2y"):
     try:
-        return model.generate_content(prompt).text
-
-    except Exception as e:
-        err = str(e)
-
-        if "429" in err:
-            return "⚠️ AI limit reached. Showing technical analysis instead."
-
-        if "404" in err:
-            return "⚠️ Model not available. Use gemini-2.5-flash."
-
-        return "⚠️ AI temporarily unavailable."
-
-
-# =========================
-# SIMPLE INTENT (NO GEMINI CALL = FIX QUOTA ISSUE)
-# =========================
-def detect_intent(query):
-    q = query.lower()
-
-    if "compare" in q:
-        return "compare"
-    if "buy" in q or "invest" in q or "should i" in q:
-        return "single"
-    return "general"
-
-
-def extract_tickers(query):
-    mapping = {
-        "infosys": "INFY.NS",
-        "tata": "TATAMOTORS.NS",
-        "reliance": "RELIANCE.NS",
-        "tcs": "TCS.NS",
-        "apple": "AAPL",
-        "tesla": "TSLA",
-        "microsoft": "MSFT"
-    }
-
-    tickers = []
-    q = query.lower()
-
-    for k, v in mapping.items():
-        if k in q:
-            tickers.append(v)
-
-    return tickers[:2]
-
-
-# =========================
-# DATA
-# =========================
-def fetch_data(ticker):
-    df = yf.Ticker(ticker).history(period="1y")
-    return df if not df.empty else None
+        df = yf.download(ticker, period=period, auto_adjust=True)
+        if df.empty:
+            return None
+        return df
+    except:
+        return None
 
 
 # =========================
 # INDICATORS
 # =========================
-def indicators(df):
+def calculate_indicators(df):
     df = df.copy()
 
     df["MA50"] = df["Close"].rolling(50).mean()
     df["MA200"] = df["Close"].rolling(200).mean()
 
+    df["MA20"] = df["Close"].rolling(20).mean()
+    std = df["Close"].rolling(20).std()
+    df["BB_Upper"] = df["MA20"] + 2 * std
+    df["BB_Lower"] = df["MA20"] - 2 * std
+
     delta = df["Close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    rs = gain.ewm(span=14).mean() / (loss.ewm(span=14).mean() + 1e-9)
+    avg_gain = gain.ewm(span=14).mean()
+    avg_loss = loss.ewm(span=14).mean()
+
+    rs = avg_gain / (avg_loss + 1e-9)
     df["RSI"] = 100 - (100 / (1 + rs))
+
+    df["EMA12"] = df["Close"].ewm(span=12).mean()
+    df["EMA26"] = df["Close"].ewm(span=26).mean()
+    df["MACD"] = df["EMA12"] - df["EMA26"]
+    df["MACD_SIGNAL"] = df["MACD"].ewm(span=9).mean()
 
     return df
 
 
 # =========================
-# BUY SCORE (NO AI DEPENDENCY)
+# RULE-BASED AI ENGINE
 # =========================
-def buy_score(df):
-    last = df.iloc[-1]
-    score = 50
+def analyze_stock(df):
+    latest = df.iloc[-1]
 
-    if last["RSI"] < 30:
-        score += 25
-    elif last["RSI"] > 70:
-        score -= 25
+    score = 0
+    reasons = []
 
-    if last["Close"] > last["MA50"] > last["MA200"]:
-        score += 20
-    elif last["Close"] < last["MA50"] < last["MA200"]:
-        score -= 20
+    # RSI
+    if latest["RSI"] < 30:
+        score += 30
+        reasons.append("RSI oversold → bullish")
+    elif latest["RSI"] > 70:
+        score -= 30
+        reasons.append("RSI overbought → bearish")
 
-    return max(5, min(95, score))
+    # Trend
+    if latest["Close"] > latest["MA50"] > latest["MA200"]:
+        score += 35
+        reasons.append("Strong uptrend (Golden structure)")
+    elif latest["Close"] < latest["MA50"] < latest["MA200"]:
+        score -= 35
+        reasons.append("Strong downtrend")
 
+    # MACD
+    if latest["MACD"] > latest["MACD_SIGNAL"]:
+        score += 15
+        reasons.append("MACD bullish crossover")
+    else:
+        score -= 15
+        reasons.append("MACD bearish signal")
 
-# =========================
-# NEWS SENTIMENT (SAFE)
-# =========================
-def get_news_sentiment(ticker):
-    try:
-        news = yf.Ticker(ticker).news[:5]
-        titles = [n.get("title", "") for n in news]
+    # Decision
+    if score >= 25:
+        decision = "BUY"
+    elif score <= -25:
+        decision = "SELL"
+    else:
+        decision = "HOLD"
 
-        pos = sum(1 for t in titles if any(w in t.lower() for w in ["rise","profit","gain"]))
-        neg = sum(1 for t in titles if any(w in t.lower() for w in ["fall","loss","drop"]))
+    confidence = min(95, max(50, abs(score) + 50))
 
-        if pos > neg:
-            return "Positive 😊"
-        elif neg > pos:
-            return "Negative 😟"
-        return "Neutral 😐"
-    except:
-        return "No news"
-
-
-# =========================
-# ANALYSIS ENGINE
-# =========================
-def analyze(ticker):
-    df = fetch_data(ticker)
-
-    if df is None:
-        st.error(f"No data for {ticker}")
-        return
-
-    df = indicators(df)
-
-    prob = buy_score(df)
-    rec = "BUY" if prob > 65 else "SELL" if prob < 40 else "HOLD"
-
-    st.subheader(ticker)
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Recommendation", rec)
-    c2.metric("Buy Probability", f"{prob}%")
-    c3.metric("Price", round(df["Close"].iloc[-1], 2))
-
-    st.line_chart(df[["Close", "MA50", "MA200"]].tail(100))
-
-    st.info("Sentiment: " + get_news_sentiment(ticker))
-
-    prompt = f"""
-    Stock: {ticker}
-    Price: {df['Close'].iloc[-1]}
-    Recommendation: {rec}
-    Explain in simple terms:
-    1. Why this rating
-    2. Risk
-    3. Outlook
-    """
-
-    st.markdown("### 🤖 AI Insight")
-    st.write(safe_gemini(prompt))
+    return decision, confidence, reasons
 
 
 # =========================
-# PORTFOLIO
+# CHART
 # =========================
-if "portfolio" not in st.session_state:
-    st.session_state.portfolio = {}
+def plot_chart(df, ticker):
+    fig, ax = plt.subplots(figsize=(12, 5))
 
-st.sidebar.title("📊 Portfolio")
+    ax.plot(df.index[-120:], df["Close"][-120:], label="Close")
+    ax.plot(df.index[-120:], df["MA50"][-120:], label="MA50")
+    ax.plot(df.index[-120:], df["MA200"][-120:], label="MA200")
 
-stock = st.sidebar.text_input("Stock")
-qty = st.sidebar.number_input("Qty", 1)
+    ax.set_title(f"{ticker} Technical Chart")
+    ax.legend()
 
-if st.sidebar.button("Add"):
-    st.session_state.portfolio[stock] = qty
-
-st.sidebar.write(st.session_state.portfolio)
+    st.pyplot(fig)
 
 
 # =========================
-# UI
+# SIMPLE STOCK INSIGHT TEXT
 # =========================
-st.title("🤖 AI Investment Assistant")
+def generate_report(ticker, df, decision, confidence, reasons):
+    price = df["Close"].iloc[-1]
 
-query = st.text_input("Ask something")
+    risk = "High" if confidence < 60 else "Medium" if confidence < 80 else "Low"
+
+    text = f"""
+### 📊 Investment Report: {ticker}
+
+**Current Price:** {price:.2f}  
+**Recommendation:** {decision}  
+**Confidence:** {confidence}%  
+**Risk Level:** {risk}
+
+---
+
+### 📌 Key Signals
+"""
+
+    for r in reasons:
+        text += f"- {r}\n"
+
+    text += """
+---
+
+### ⚠️ Disclaimer
+This is a rule-based analysis, not financial advice.
+"""
+
+    return text
+
+
+# =========================
+# MAIN APP LOGIC
+# =========================
+query = st.text_input("Ask something (e.g., Should I invest in Infosys?)")
 
 if st.button("Analyze"):
+
     if not query:
-        st.warning("Enter query")
+        st.warning("Enter a query")
     else:
-        intent = detect_intent(query)
-        st.info(f"Intent: {intent}")
+        st.info("Processing...")
 
-        tickers = extract_tickers(query)
+        # simple extraction (NO AI)
+        query_lower = query.lower()
 
-        if not tickers:
-            st.write(safe_gemini(query))
-        else:
-            for t in tickers:
-                analyze(t)
+        ticker_map = {
+            "infosys": "INFY.NS",
+            "tata": "TATAMOTORS.NS",
+            "tcs": "TCS.NS",
+            "reliance": "RELIANCE.NS",
+            "hdfc": "HDFCBANK.NS",
+            "apple": "AAPL",
+            "tesla": "TSLA",
+            "microsoft": "MSFT"
+        }
 
+        ticker = None
+        for name, tk in ticker_map.items():
+            if name in query_lower:
+                ticker = tk
+                break
 
-# =========================
-# AUTO PICKS
-# =========================
-st.markdown("### 🔥 Auto Picks")
+        if not ticker:
+            st.error("Stock not recognized. Try Infosys, Tata, Reliance etc.")
+            st.stop()
 
-watchlist = ["AAPL", "MSFT", "TSLA", "INFY.NS", "TCS.NS"]
+        df = fetch_stock_data(ticker)
 
-for t in watchlist:
-    df = fetch_data(t)
-    if df is not None:
-        df = indicators(df)
-        st.write(t, "→", buy_score(df), "% Buy Score")
+        if df is None:
+            st.error("Data not available")
+            st.stop()
+
+        df = calculate_indicators(df)
+
+        decision, confidence, reasons = analyze_stock(df)
+
+        st.subheader(f"{ticker}")
+
+        st.metric("Recommendation", decision)
+        st.metric("Confidence", f"{confidence}%")
+
+        plot_chart(df, ticker)
+
+        st.markdown(generate_report(ticker, df, decision, confidence, reasons))
