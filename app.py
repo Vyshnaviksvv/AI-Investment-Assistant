@@ -718,7 +718,7 @@ def process_query(query):
             print(f"❌ Q&A failed: {e}")
 
 # Install packages
-!pip install yfinance google-generativeai ipywidgets seaborn jinja2 -q
+
 
 # Imports
 import os
