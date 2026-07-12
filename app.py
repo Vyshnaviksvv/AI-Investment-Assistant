@@ -17,6 +17,20 @@ except ImportError:
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_percentage_error
+def format_val(val, fmt_type="float", prefix="", suffix="", fallback="N/A"):
+    if val is None or pd.isna(val) or val == "":
+        return fallback
+    try:
+        if fmt_type == "int":
+            return f"{prefix}{int(val):,d}{suffix}"
+        elif fmt_type == "float":
+            return f"{prefix}{float(val):,.2f}{suffix}"
+        elif fmt_type == "currency":
+            return f"{prefix}${float(val):,.2f}{suffix}"
+        else:
+            return f"{prefix}{str(val)}{suffix}"
+    except Exception:
+        return fallback
 # --- PAGE CONFIGURATION & THEME ---
 st.set_page_config(
     page_title="Aegis AI Investment Assistant",
@@ -968,16 +982,24 @@ with st.sidebar:
     index_data = get_global_market_indices()
     
     for index_name, val in index_data.items():
-        color_class = "delta-positive" if val['change'] >= 0 else "delta-negative"
-        sign = "+" if val['change'] >= 0 else ""
+        if val['price'] == 0.0:
+            price_disp = "N/A"
+            change_disp = "N/A"
+            color_class = "delta-neutral"
+        else:
+            price_disp = f"{val['price']:,.2f}"
+            color_class = "delta-positive" if val['change'] >= 0 else "delta-negative"
+            sign = "+" if val['change'] >= 0 else ""
+            change_disp = f"{sign}{val['change']:.2f}%"
+            
         st.markdown(f"""
         <div class="metric-card" style="padding: 10px; margin-bottom: 8px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <span style="font-weight: 600; font-size: 0.95rem; color:#ffffff;">{index_name}</span>
-                <span class="{color_class}" style="font-size: 0.9rem; font-weight: 700;">{sign}{val['change']:.2f}%</span>
+                <span class="{color_class}" style="font-size: 0.9rem; font-weight: 700;">{change_disp}</span>
             </div>
             <div style="font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-top: 4px;">
-                {val['price']:,.2f}
+                {price_disp}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1043,31 +1065,35 @@ with tab1:
     # 4 metric cards
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     with col_m1:
+        high_val = format_val(info.get('fiftyTwoWeekHigh'), 'currency')
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-title">52 Week High</div>
-            <div class="metric-value">${info.get('fiftyTwoWeekHigh', 0.0):,.2f}</div>
+            <div class="metric-value">{high_val}</div>
         </div>
         """, unsafe_allow_html=True)
     with col_m2:
+        low_val = format_val(info.get('fiftyTwoWeekLow'), 'currency')
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-title">52 Week Low</div>
-            <div class="metric-value">${info.get('fiftyTwoWeekLow', 0.0):,.2f}</div>
+            <div class="metric-value">{low_val}</div>
         </div>
         """, unsafe_allow_html=True)
     with col_m3:
+        mcap_val = format_val(info.get('marketCap'), 'int', prefix='$')
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-title">Market Cap</div>
-            <div class="metric-value">${info.get('marketCap', 0.0):,d}</div>
+            <div class="metric-value">{mcap_val}</div>
         </div>
         """, unsafe_allow_html=True)
     with col_m4:
+        pe_val = format_val(info.get('trailingPE'), 'float')
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-title">P/E Ratio</div>
-            <div class="metric-value">{info.get('trailingPE', 0.0) or 'N/A'}</div>
+            <div class="metric-value">{pe_val}</div>
         </div>
         """, unsafe_allow_html=True)
         
@@ -1116,7 +1142,8 @@ with tab1:
         st.markdown(f"**CEO:** {info.get('ceo', 'N/A')}")
         st.markdown(f"**Sector:** {info.get('sector', 'N/A')}")
         st.markdown(f"**Industry:** {info.get('industry', 'N/A')}")
-        st.markdown(f"**Employees:** {info.get('fullTimeEmployees', 0):,d}")
+        employees_val = format_val(info.get('fullTimeEmployees'), 'int')
+        st.markdown(f"**Employees:** {employees_val}")
 # --- TAB 2: TECHNICAL ANALYSIS ---
 with tab2:
     st.markdown("<h3 class='section-header'>Technical Diagnostics</h3>", unsafe_allow_html=True)
@@ -1218,13 +1245,13 @@ with tab3:
     with col_f1:
         st.markdown("### Valuation & Finance Metrics")
         fund_metrics = {
-            "Market Cap": f"${info.get('marketCap', 0):,d}",
-            "PE Ratio": info.get('trailingPE', 'N/A'),
-            "Forward PE": info.get('forwardPE', 'N/A'),
-            "EPS (Trailing)": f"${info.get('trailingEps', 0.0):.2f}",
-            "Price to Book": info.get('priceToBook', 'N/A'),
-            "Forward Dividend Yield": f"{info.get('dividendYield', 0.0) * 100.0:.2f}%" if info.get('dividendYield') else "N/A",
-            "Beta": info.get('beta', 'N/A')
+            "Market Cap": format_val(info.get('marketCap'), 'int', prefix='$'),
+            "PE Ratio": format_val(info.get('trailingPE'), 'float'),
+            "Forward PE": format_val(info.get('forwardPE'), 'float'),
+            "EPS (Trailing)": format_val(info.get('trailingEps'), 'float', prefix='$'),
+            "Price to Book": format_val(info.get('priceToBook'), 'float'),
+            "Forward Dividend Yield": format_val(info.get('dividendYield') * 100.0 if info.get('dividendYield') is not None else None, 'float', suffix='%'),
+            "Beta": format_val(info.get('beta'), 'float')
         }
         st.table(pd.DataFrame(list(fund_metrics.items()), columns=["Metric", "Value"]))
         
@@ -1511,12 +1538,12 @@ with tab8:
                     comp_data.append({
                         "Ticker": tick,
                         "Name": comp_info.get('longName', tick),
-                        "Current Price": f"${hist['Close'].iloc[-1]:.2f}",
-                        "Market Cap": f"${comp_info.get('marketCap', 0):,d}",
-                        "PE Ratio": comp_info.get('trailingPE', 'N/A'),
-                        "Forward PE": comp_info.get('forwardPE', 'N/A'),
-                        "Beta": comp_info.get('beta', 'N/A'),
-                        "Dividend Yield": f"{comp_info.get('dividendYield', 0.0) * 100.0:.2f}%" if comp_info.get('dividendYield') else "N/A"
+                        "Current Price": format_val(hist['Close'].iloc[-1], 'float', prefix='$'),
+                        "Market Cap": format_val(comp_info.get('marketCap'), 'int', prefix='$'),
+                        "PE Ratio": format_val(comp_info.get('trailingPE'), 'float'),
+                        "Forward PE": format_val(comp_info.get('forwardPE'), 'float'),
+                        "Beta": format_val(comp_info.get('beta'), 'float'),
+                        "Dividend Yield": format_val(comp_info.get('dividendYield') * 100.0 if comp_info.get('dividendYield') is not None else None, 'float', suffix='%')
                     })
             except Exception as e:
                 continue
