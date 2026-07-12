@@ -118,7 +118,11 @@ COMPANY_TICKER_MAP = {
     'disney': 'DIS', 'nike': 'NKE', 'visa': 'V', 'mastercard': 'MA', 'salesforce': 'CRM',
     'oracle': 'ORCL', 'adobe': 'ADBE', 'cisco': 'CSCO', 'comcast': 'CMCSA', 'pepsi': 'PEP',
     'coca-cola': 'KO', 'coca cola': 'KO', 'johnson': 'JNJ', 'pfizer': 'PFE', 'moderna': 'MRNA',
-    'eli lilly': 'LLY', 'broadcom': 'AVGO', 'qualcomm': 'QCOM', 'asml': 'ASML'
+    'eli lilly': 'LLY', 'broadcom': 'AVGO', 'qualcomm': 'QCOM', 'asml': 'ASML',
+    'tata': 'TATAMOTORS.NS', 'tata motors': 'TATAMOTORS.NS', 'tata steel': 'TATASTEEL.NS',
+    'suzuki': 'SZKMY', 'reliance': 'RELIANCE.NS', 'tcs': 'TCS.NS', 'infosys': 'INFY',
+    'hdfc': 'HDB', 'icici': 'IBN', 'toyota': 'TM', 'samsung': 'SSNLF', 'alibaba': 'BABA',
+    'tencent': 'TCEHY', 'nifty': '^NSEI', 'sensex': '^BSESN', 'sp500': '^GSPC', 'nasdaq': '^IXIC'
 }
 SECTOR_ETF_MAP = {
     'Technology': 'XLK',
@@ -1006,25 +1010,31 @@ with st.sidebar:
         
     st.markdown("---")
     # Quick Ticker Selector
-    ticker_choice = st.text_input("Active Ticker Direct Input", value=st.session_state.active_ticker).upper()
+    ticker_choice_raw = st.text_input("Active Ticker Direct Input", value=st.session_state.active_ticker)
+    ticker_choice = ticker_choice_raw.strip().upper()
+    ticker_choice_lower = ticker_choice_raw.strip().lower()
+    
+    if ticker_choice_lower in COMPANY_TICKER_MAP:
+        ticker_choice = COMPANY_TICKER_MAP[ticker_choice_lower]
+        
     if ticker_choice != st.session_state.active_ticker:
         st.session_state.active_ticker = ticker_choice
 # --- DYNAMIC APP LAYOUT ---
 # Fetch base data for the active ticker
 ticker = st.session_state.active_ticker
 df_history = fetch_historical_data(ticker)
-info = fetch_company_info(ticker)
-news = fetch_ticker_news(ticker)
 # Handle offline / invalid ticker outcomes
 is_data_valid = not df_history.empty and 'Close' in df_history.columns
 if not is_data_valid:
-    st.title("⚠️ Ticker Offline or Data Unavailable")
-    st.warning(f"Could not load data for **{ticker}**. Please check the ticker name and verify your internet connection.")
-    st.markdown("### Suggested Actions:")
-    st.markdown("- Verify the ticker symbol is correct (e.g. `AAPL`, `MSFT`, `TSLA`, `RELIANCE.NS`).")
-    st.markdown("- Check if Yahoo Finance matches the index formatting.")
-    st.markdown("- Try again later if the API is experiencing high latency.")
-    st.stop()
+    st.sidebar.error(f"Could not load ticker: '{ticker}'. Resetting to AAPL.")
+    st.session_state.active_ticker = "AAPL"
+    ticker = "AAPL"
+    df_history = fetch_historical_data(ticker)
+    info = fetch_company_info(ticker)
+    news = fetch_ticker_news(ticker)
+else:
+    info = fetch_company_info(ticker)
+    news = fetch_ticker_news(ticker)
 # --- HEADER DASHBOARD ---
 company_name = info.get('longName', ticker)
 current_price = df_history['Close'].iloc[-1]
